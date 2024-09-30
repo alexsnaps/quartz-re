@@ -13,19 +13,63 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+use std::collections::BTreeSet;
+use std::mem::ManuallyDrop;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
+use std::thread::JoinHandle;
 use std::time::SystemTime;
 
-pub struct Scheduler {}
-
-impl Scheduler {
-  pub fn start(&mut self) {
-    todo!()
-  }
+pub struct Scheduler {
+  running: Arc<AtomicBool>,
+  job_store: Arc<JobStore>,
+  scheduler_thread: ManuallyDrop<JoinHandle<()>>,
 }
 
 impl Scheduler {
+  pub fn new() -> Self {
+    let running = Arc::new(AtomicBool::new(true));
+    let r = Arc::clone(&running);
+
+    let job_store = Arc::new(JobStore::new());
+    let store = Arc::clone(&job_store);
+
+    let handle = thread::Builder::new()
+      .name("Quartz Scheduler Thread".to_string())
+      .spawn(move || {
+        while r.load(Ordering::SeqCst) {
+          if let Some(job) = store.next_job() {
+            job.execute();
+          }
+        }
+      })
+      .expect("");
+
+    Self {
+      running,
+      job_store,
+      scheduler_thread: ManuallyDrop::new(handle),
+    }
+  }
+
   pub fn schedule_job(&mut self, _job: JobDetail, _trigger: Trigger) {
-    todo!()
+    self.job_store.signal();
+  }
+}
+
+impl Drop for Scheduler {
+  fn drop(&mut self) {
+    if self
+      .running
+      .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+      .is_ok()
+    {
+      unsafe {
+        let handle = ManuallyDrop::take(&mut self.scheduler_thread);
+        handle.join().expect("Couldn't join the scheduler thread");
+      }
+    }
   }
 }
 
@@ -35,31 +79,87 @@ impl Default for Scheduler {
   }
 }
 
-impl Scheduler {
-  pub fn new() -> Self {
-    todo!()
-  }
+pub struct JobDetail {
+  id: String,
+  group: String,
+  target_fn: fn(),
 }
-
-pub struct JobDetail;
 
 impl JobDetail {
   pub fn id(&self) -> &str {
-    todo!()
+    &self.id
+  }
+
+  pub fn group(&self) -> &str {
+    &self.group
+  }
+
+  pub fn execute(&self) {
+    (self.target_fn)();
   }
 }
 
 impl JobDetail {
-  pub fn with_identity(_id: &str, _group: &str, _function: fn()) -> Self {
-    todo!()
+  pub fn with_identity<S: Into<String>>(id: S, group: S, target: fn()) -> Self {
+    Self {
+      id: id.into(),
+      group: group.into(),
+      target_fn: target,
+    }
   }
 }
 
-pub struct Trigger;
+pub struct Trigger {
+  id: String,
+  group: String,
+  #[allow(dead_code)]
+  start_time: SystemTime,
+}
 
 impl Trigger {
-  pub fn with_identity(_id: &str, _group: &str, _start_time: SystemTime) -> Self {
-    todo!()
+  pub fn with_identity<S: Into<String>>(id: S, group: S) -> Self {
+    Self {
+      id: id.into(),
+      group: group.into(),
+      start_time: SystemTime::now(),
+    }
+  }
+
+  pub fn start_at(self, start_time: SystemTime) -> Self {
+    Self {
+      id: self.id,
+      group: self.group,
+      start_time,
+    }
+  }
+}
+
+struct JobStore {
+  signal: Arc<Condvar>,
+  #[allow(dead_code)]
+  data: Arc<Mutex<BTreeSet<String>>>,
+}
+
+impl JobStore {
+  fn new() -> Self {
+    Self {
+      signal: Arc::new(Default::default()),
+      data: Arc::new(Mutex::new(Default::default())),
+    }
+  }
+
+  fn next_job(&self) -> Option<JobDetail> {
+    None
+  }
+
+  fn signal(&self) {
+    self.signal.notify_one()
+  }
+}
+
+impl Default for JobStore {
+  fn default() -> Self {
+    JobStore::new()
   }
 }
 
@@ -85,17 +185,11 @@ mod tests {
     let job = JobDetail::with_identity(job_id, "group1", || println!("Hello world!"));
 
     // Trigger the job to run on the next round minute
-    let trigger = Trigger::with_identity("trigger1", "group1", run_time);
+    let trigger = Trigger::with_identity("trigger1", "group1").start_at(run_time);
 
     // Tell quartz to schedule the job using our trigger
     sched.schedule_job(job, trigger);
     println!("{job_id} will run at: {run_time:?}");
-
-    // Start up the scheduler (nothing can actually run until the
-    // scheduler has been started)
-    sched.start();
-
-    println!("------- Started Scheduler -----------------");
 
     // wait long enough so that the scheduler as an opportunity to
     // run the job!

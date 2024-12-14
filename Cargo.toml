@@ -1,6 +1,6 @@
 [package]
 name = "quartz"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 authors = ["Alex Snaps <alex@wcgw.dev>"]
 license = "Apache-2.0"

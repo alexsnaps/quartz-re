@@ -35,11 +35,19 @@ impl WorkerPool {
     Self { running, workers }
   }
 
-  pub fn shutdown(self) {
+  pub fn shutdown(mut self) {
     self.running.store(false, Ordering::SeqCst);
-    for (worker, handle) in self.workers {
+    for (worker, handle) in self.workers.drain(..) {
       worker.wake_up();
       handle.join().expect("Worker thread panicked");
+    }
+  }
+}
+
+impl Drop for WorkerPool {
+  fn drop(&mut self) {
+    if !self.workers.is_empty() {
+      eprintln!("WorkerPool hasn't been shutdown prior to being Dropped!");
     }
   }
 }

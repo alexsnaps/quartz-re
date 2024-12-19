@@ -4,19 +4,22 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::thread::JoinHandle;
+use std::time::Duration;
 
-pub(super) struct WorkerPool {
+#[derive(Debug)]
+pub(super) struct WorkerPool<T> {
   running: Arc<AtomicBool>,
-  workers: Vec<(Arc<Worker>, JoinHandle<()>)>,
+  workers: Vec<(Arc<Worker<T>>, JoinHandle<()>)>,
 }
 
-struct Worker {
+#[derive(Debug)]
+struct Worker<T> {
   busy: AtomicBool,
-  task: Mutex<Option<()>>,
+  task: Mutex<Option<T>>,
   cvar: Condvar,
 }
 
-impl WorkerPool {
+impl<T: Send + 'static> WorkerPool<T> {
   pub fn new(size: NonZeroUsize) -> Self {
     let size = size.get();
 
@@ -25,10 +28,10 @@ impl WorkerPool {
 
     for _ in 0..size {
       let running = running.clone();
-      let worker: Arc<Worker> = Arc::default();
+      let worker: Arc<Worker<T>> = Arc::default();
       let w = worker.clone();
       let jh = thread::spawn(move || {
-        while running.load(Ordering::SeqCst) {
+        while running.load(Ordering::Acquire) {
           worker.do_work();
         }
       });
@@ -38,8 +41,24 @@ impl WorkerPool {
     Self { running, workers }
   }
 
+  pub fn submit(&self, task: T) -> Result<(), T> {
+    match self
+      .workers
+      .iter()
+      .find(|(w, _)| !w.busy.load(Ordering::Acquire))
+      .map(|(w, _)| w)
+    {
+      Some(w) => w.assign(task),
+      None => Err(task),
+    }
+  }
+
+  pub fn available_workers(&self) -> usize {
+    self.workers.iter().filter(|w| !w.0.busy()).count()
+  }
+
   pub fn shutdown(mut self) {
-    self.running.store(false, Ordering::SeqCst);
+    self.running.store(false, Ordering::Release);
     for (worker, handle) in self.workers.drain(..) {
       worker.wake_up();
       handle.join().expect("Worker thread panicked");
@@ -47,15 +66,22 @@ impl WorkerPool {
   }
 }
 
-impl Drop for WorkerPool {
+impl<T> Drop for WorkerPool<T> {
   fn drop(&mut self) {
     if !self.workers.is_empty() {
-      eprintln!("WorkerPool hasn't been shutdown prior to being Dropped!");
+      if cfg!(test) {
+        assert!(
+          self.workers.is_empty(),
+          "WorkerPool hasn't been shutdown prior to being Dropped!"
+        );
+      } else {
+        eprintln!("WorkerPool hasn't been shutdown properly!");
+      }
     }
   }
 }
 
-impl Worker {
+impl<T> Worker<T> {
   fn new() -> Self {
     Self {
       busy: Default::default(), // todo non atomic? if only accessed from within the scheduler's lock
@@ -64,9 +90,9 @@ impl Worker {
     }
   }
 
-  fn assign(&self, work: ()) -> Result<(), ()> {
+  fn assign(&self, work: T) -> Result<(), T> {
     if self.busy.load(Ordering::Acquire) {
-      return Err(());
+      return Err(work);
     }
     let mut task = self.task.lock().unwrap();
     match *task {
@@ -76,7 +102,7 @@ impl Worker {
         self.cvar.notify_one();
         Ok(())
       },
-      Some(_) => Err(()),
+      Some(_) => Err(work),
     }
   }
 
@@ -99,7 +125,14 @@ impl Worker {
       task = self.cvar.wait(task).unwrap();
     }
     task.take().expect("task must be available");
-    // todo do the work
+    // todo delete this!
+    if cfg!(test) {
+      println!("Doing work!");
+      thread::sleep(Duration::from_millis(2));
+      // todo do the work
+      println!("Done!");
+    }
+
     self.busy.store(false, Ordering::Release);
   }
 
@@ -111,7 +144,7 @@ impl Worker {
   }
 }
 
-impl Default for Worker {
+impl<T> Default for Worker<T> {
   fn default() -> Self {
     Self::new()
   }
@@ -124,8 +157,21 @@ mod tests {
 
   #[test]
   fn test_thread_pool() {
-    let pool = WorkerPool::new(NonZeroUsize::new(1).unwrap());
+    let pool = WorkerPool::<()>::new(NonZeroUsize::new(1).unwrap());
     pool.shutdown();
+  }
+
+  #[test]
+  fn available_workers() {
+    let pool = WorkerPool::<()>::new(NonZeroUsize::new(2).unwrap());
+    assert_eq!(pool.available_workers(), 2);
+    pool.shutdown();
+  }
+
+  #[test]
+  #[should_panic(expected = "WorkerPool hasn't been shutdown prior to being Dropped!")]
+  fn test_thread_pool_dropped_panics() {
+    let _pool = WorkerPool::<()>::new(NonZeroUsize::new(1).unwrap());
   }
 
   #[test]

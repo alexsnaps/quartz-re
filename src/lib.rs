@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::thread::JoinHandle;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 pub struct Scheduler {
   running: Arc<AtomicBool>,
@@ -157,6 +157,10 @@ impl JobStore {
 
   fn signal(&self) {
     self.signal.notify_one()
+  }
+
+  fn next_fire(&self) -> Option<Duration> {
+    Some(Duration::from_millis(1))
   }
 }
 

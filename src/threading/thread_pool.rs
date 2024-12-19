@@ -1,4 +1,3 @@
-use std::mem::ManuallyDrop;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Condvar, Mutex};
@@ -7,7 +6,7 @@ use std::thread::JoinHandle;
 
 pub(super) struct WorkerPool {
   running: Arc<AtomicBool>,
-  workers: Vec<(Arc<Worker>, ManuallyDrop<JoinHandle<()>>)>,
+  workers: Vec<(Arc<Worker>, JoinHandle<()>)>,
 }
 
 struct Worker {
@@ -30,24 +29,18 @@ impl WorkerPool {
           worker.do_work();
         }
       });
-      workers.push((w, ManuallyDrop::new(jh)));
+      workers.push((w, jh));
     }
 
     Self { running, workers }
   }
-}
 
-impl Drop for WorkerPool {
-  fn drop(&mut self) {
+  pub fn shutdown(self) {
     self.running.store(false, Ordering::SeqCst);
-    for (worker, jh) in &mut self.workers {
+    for (worker, handle) in self.workers {
       worker.wake_up();
-      unsafe {
-        let handle = ManuallyDrop::take(jh);
-        handle.join().expect("Worker thread panicked");
-      }
+      handle.join().expect("Worker thread panicked");
     }
-    println!("WorkerPool dropped");
   }
 }
 
@@ -121,7 +114,7 @@ mod tests {
   #[test]
   fn test_thread_pool() {
     let pool = WorkerPool::new(8);
-    std::mem::drop(pool);
+    pool.shutdown();
   }
 
   #[test]

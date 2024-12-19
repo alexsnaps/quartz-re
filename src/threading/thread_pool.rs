@@ -1,3 +1,4 @@
+use std::num::NonZeroUsize;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Condvar, Mutex};
@@ -16,7 +17,9 @@ struct Worker {
 }
 
 impl WorkerPool {
-  pub fn new(size: usize) -> Self {
+  pub fn new(size: NonZeroUsize) -> Self {
+    let size = size.get();
+
     let running = Arc::new(AtomicBool::new(true));
     let mut workers = Vec::with_capacity(size);
 
@@ -121,7 +124,7 @@ mod tests {
 
   #[test]
   fn test_thread_pool() {
-    let pool = WorkerPool::new(8);
+    let pool = WorkerPool::new(NonZeroUsize::new(1).unwrap());
     pool.shutdown();
   }
 

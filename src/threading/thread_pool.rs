@@ -26,15 +26,18 @@ impl<T: Send + 'static> WorkerPool<T> {
     let running = Arc::new(AtomicBool::new(true));
     let mut workers = Vec::with_capacity(size);
 
-    for _ in 0..size {
+    for i in 0..size {
       let running = running.clone();
       let worker: Arc<Worker<T>> = Arc::default();
       let w = worker.clone();
-      let jh = thread::spawn(move || {
-        while running.load(Ordering::Acquire) {
-          worker.do_work();
-        }
-      });
+      let jh = thread::Builder::new()
+        .name(format!("Quartz Worker #{i}"))
+        .spawn(move || {
+          while running.load(Ordering::Acquire) {
+            worker.do_work();
+          }
+        })
+        .unwrap();
       workers.push((w, jh));
     }
 
@@ -53,6 +56,7 @@ impl<T: Send + 'static> WorkerPool<T> {
     }
   }
 
+  #[allow(dead_code)]
   pub fn available_workers(&self) -> usize {
     self.workers.iter().filter(|w| !w.0.busy()).count()
   }

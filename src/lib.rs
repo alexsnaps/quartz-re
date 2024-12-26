@@ -13,66 +13,36 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#[allow(dead_code)]
 mod threading;
 
+use crate::threading::SchedulerThread;
 use std::collections::BTreeSet;
-use std::mem::ManuallyDrop;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Condvar, Mutex};
-use std::thread;
-use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
 
 pub struct Scheduler {
-  running: Arc<AtomicBool>,
   job_store: Arc<JobStore>,
-  scheduler_thread: ManuallyDrop<JoinHandle<()>>,
+  scheduler_thread: SchedulerThread,
 }
 
 impl Scheduler {
   pub fn new() -> Self {
-    let running = Arc::new(AtomicBool::new(true));
-    let r = Arc::clone(&running);
-
     let job_store = Arc::new(JobStore::new());
-    let store = Arc::clone(&job_store);
-
-    let handle = thread::Builder::new()
-      .name("Quartz Scheduler Thread".to_string())
-      .spawn(move || {
-        while r.load(Ordering::SeqCst) {
-          if let Some(job) = store.next_job() {
-            job.execute();
-          }
-        }
-      })
-      .expect("");
+    let scheduler_thread = SchedulerThread::new(NonZeroUsize::new(2).unwrap(), Arc::clone(&job_store));
 
     Self {
-      running,
       job_store,
-      scheduler_thread: ManuallyDrop::new(handle),
+      scheduler_thread,
     }
   }
 
   pub fn schedule_job(&mut self, _job: JobDetail, _trigger: Trigger) {
     self.job_store.signal();
   }
-}
 
-impl Drop for Scheduler {
-  fn drop(&mut self) {
-    if self
-      .running
-      .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
-      .is_ok()
-    {
-      unsafe {
-        let handle = ManuallyDrop::take(&mut self.scheduler_thread);
-        handle.join().expect("Couldn't join the scheduler thread");
-      }
-    }
+  pub fn shutdown(self) {
+    self.scheduler_thread.shutdown();
   }
 }
 
@@ -99,6 +69,12 @@ impl JobDetail {
 
   pub fn execute(&self) {
     (self.target_fn)();
+  }
+}
+
+impl From<JobDetail> for () {
+  fn from(_value: JobDetail) -> Self {
+    // todo for an actual useful type
   }
 }
 
@@ -200,12 +176,13 @@ mod tests {
 
     // wait long enough so that the scheduler as an opportunity to
     // run the job!
-    println!("------- Waiting 65 seconds... -------------");
+    println!("------- Waiting 2 seconds... -------------");
     // wait 2 seconds to show job
     thread::sleep(Duration::from_secs(2));
     // executing...
 
     // shut down the scheduler
     println!("------- Shutting Down ---------------------");
+    sched.shutdown();
   }
 }

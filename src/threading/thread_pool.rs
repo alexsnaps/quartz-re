@@ -56,6 +56,7 @@ impl<T: Send + 'static> WorkerPool<T> {
     }
   }
 
+  #[allow(dead_code)]
   pub fn available_workers(&self) -> usize {
     self.workers.iter().filter(|w| !w.0.busy()).count()
   }

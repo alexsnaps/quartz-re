@@ -15,6 +15,7 @@ const DEFAULT_WAIT_NO_WORK: Duration = Duration::from_secs(1);
 pub(super) struct SchedulerThread {
   halted: Arc<AtomicBool>,
   workers: Arc<WorkerPool<()>>,
+  #[allow(dead_code)]
   store: Arc<JobStore>,
   handle: JoinHandle<()>,
 }
@@ -24,31 +25,25 @@ impl SchedulerThread {
     let halted = Arc::new(AtomicBool::default());
     let workers = Arc::new(WorkerPool::new(pool_size));
     let handle = {
-      let workers = workers.clone();
       let halted = halted.clone();
       let store = store.clone();
+      let workers = workers.clone();
 
-      thread::spawn(move || {
-        while !halted.load(Acquire) {
-          let available_workers = workers.available_workers();
-          // todo delete this!
-          if cfg!(test) {
-            println!("We have {} workers available", available_workers);
+      thread::Builder::new()
+        .name("Quartz Scheduler Thread".to_string())
+        .spawn(move || {
+          while !halted.load(Acquire) {
+            let next_fire = store.next_fire().unwrap_or(DEFAULT_WAIT_NO_WORK);
+            thread::sleep(next_fire);
+            if let Some(job) = store.next_job() {
+              #[allow(clippy::unit_arg)]
+              // todo make this useful!
+              workers.submit(job.into()).unwrap();
+            }
           }
-          let next_fire = store.next_fire().unwrap_or(DEFAULT_WAIT_NO_WORK);
-          thread::sleep(next_fire);
-        }
-      })
+        })
+        .unwrap()
     };
-
-    // todo delete this!
-    if cfg!(test) {
-      workers.submit(()).unwrap();
-      thread::sleep(Duration::from_millis(1));
-      workers.submit(()).unwrap();
-      thread::sleep(Duration::from_millis(1));
-      workers.submit(()).unwrap();
-    }
 
     Self {
       halted,
